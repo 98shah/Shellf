@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<link rel="stylesheet" href="xterm.css"/>
+<style>
+    html, body { margin: 0; height: 100%; background: #0C0C0C; overflow: hidden; }
+    /* Slim dark scrollbar matching the app chrome */
+    .xterm-viewport::-webkit-scrollbar { width: 8px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: #0C0C0C; }
+    .xterm-viewport::-webkit-scrollbar-thumb { background: #3A3A3A; }
+    .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4A4A55; }
+    /* visibility (not display): hidden panes keep their layout size, so terminals can
+       be fitted to their real dimensions BEFORE any output is written into them.
+       If a terminal's grid ever differs from what ConPTY believes, the shell's absolute
+       cursor addressing paints in the wrong places. */
+    .term { position: absolute; inset: 0; padding: 10px 4px 10px 12px; visibility: hidden; }
+    .term.active { visibility: visible; }
+</style>
+</head>
+<body>
+<script src="xterm.js"></script>
+<script src="xterm-addon-fit.js"></script>
+<script>
+    // One xterm.js instance per Shellf session, all hosted in this single page.
+    // Protocol with C# (TerminalHostView):
+    //   C# -> JS: {type:'create', id, data(b64)} {type:'write', id, data(b64)} {type:'show', id} {type:'dispose', id}
+    //   JS -> C#: {type:'ready'} {type:'input', id, data} {type:'resize', id, cols, rows}
+    const HOST = window.chrome.webview;
+    const sessions = new Map();
+    let activeId = "";
+
+    const THEME = {
+        background: "#0C0C0C",
+        foreground: "#D0D0D0",
+        cursor: "#EDEDED",
+        cursorAccent: "#0C0C0C",
+        selectionBackground: "#333333",
+    };
+
+    function b64ToBytes(b64) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+    }
+
+    function syncSize(id, s) {
+        s.fit.fit();
+        // Explicit, unconditional: keeps ConPTY in lockstep even when xterm's dims did
+        // not change (fit fires onResize only on a change), and the resize makes
+        // conhost repaint the viewport, which self-heals any stale content.
+        HOST.postMessage({ type: "resize", id, cols: s.term.cols, rows: s.term.rows });
+    }
+
+    function create(id, initialB64) {
+        if (sessions.has(id)) return;
+
+        const el = document.createElement("div");
+        el.className = "term";
+        document.body.appendChild(el);
+
+        const term = new Terminal({
+            theme: THEME,
+            fontFamily: '"Cascadia Mono", Consolas, monospace',
+            fontSize: 14,
+            cursorBlink: true,
+            scrollback: 5000,
+            allowProposedApi: true,
+        });
+        const fit = new FitAddon.FitAddon();
+        term.loadAddon(fit);
+
+        // OSC 133 command marks (emitted by the shell prompt hooks): each new prompt is
+        // preceded by a spacer row (the shell prints a blank line before the prompt);
+        // the separator is drawn vertically centered in that spacer row, so command
+        // blocks are divided by a line with breathing room on both sides.
+        const blocks = { firstPrompt: true, separators: [] };
+
+        // Clear-screen (CSI 2J/3J, i.e. clear/cls/Ctrl+L) erases the text but would
+        // leave the separator decorations hanging on the emptied rows — dispose them
+        // and treat the next prompt as the first one again.
+        term.parser.registerCsiHandler({ final: "J" }, params => {
+            if (params[0] === 2 || params[0] === 3) {
+                for (const sep of blocks.separators) sep.dispose();
+                blocks.separators.length = 0;
+                blocks.firstPrompt = true;
+            }
+            return false; // always let xterm's own handler run as well
+        });
+
+        term.parser.registerOscHandler(133, data => {
+            if (data[0] !== "A") return true;   // only prompt-start draws a line
+            if (blocks.firstPrompt) { blocks.firstPrompt = false; return true; }
+            const marker = term.registerMarker(-1); // the spacer row above the prompt
+            if (marker) {
+                const deco = term.registerDecoration({ marker });
+                if (deco) {
+                    deco.onRender(el => {
+                        el.style.width = "100%";
+                        el.style.background =
+                            "linear-gradient(to bottom," +
+                            " transparent calc(50% - 1px)," +
+                            " rgba(255,255,255,0.28) calc(50% - 1px)," +
+                            " rgba(255,255,255,0.28) 50%," +
+                            " transparent 50%)";
+                        el.style.pointerEvents = "none";
+                    });
+                    blocks.separators.push(deco);
+                    if (blocks.separators.length > 300) blocks.separators.shift();
+                }
+            }
+            return true;
+        });
+        term.onData(data => HOST.postMessage({ type: "input", id, data }));
+        term.onResize(size => HOST.postMessage({ type: "resize", id, cols: size.cols, rows: size.rows }));
+        term.open(el);
+
+        const s = { term, fit, el };
+        sessions.set(id, s);
+
+        // Order matters: reach final size FIRST, then write the replayed output.
+        syncSize(id, s);
+        if (initialB64) term.write(b64ToBytes(initialB64));
+
+        // The 'show' for a brand-new tab can arrive before its 'create'; self-heal here.
+        if (activeId === id) show(id);
+    }
+
+    function show(id) {
+        activeId = id;
+        for (const [sid, s] of sessions) {
+            const active = sid === id;
+            s.el.classList.toggle("active", active);
+            if (active) {
+                syncSize(sid, s);
+                s.term.focus();
+            }
+        }
+    }
+
+    function dispose(id) {
+        const s = sessions.get(id);
+        if (!s) return;
+        s.term.dispose();
+        s.el.remove();
+        sessions.delete(id);
+    }
+
+    HOST.addEventListener("message", e => {
+        const m = e.data;
+        switch (m.type) {
+            case "create": create(m.id, m.data); break;
+            case "write": { const s = sessions.get(m.id); if (s) s.term.write(b64ToBytes(m.data)); break; }
+            case "show": show(m.id || ""); break;
+            case "dispose": dispose(m.id); break;
+        }
+    });
+
+    // Refit every pane (they all share the same geometry), so hidden tabs are already
+    // correct when the user switches to them. Debounced against resize-drag floods.
+    let resizeTimer = 0;
+    window.addEventListener("resize", () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            for (const [sid, s] of sessions) syncSize(sid, s);
+        }, 50);
+    });
+
+    HOST.postMessage({ type: "ready" });
+</script>
+</body>
+</html>

@@ -91,7 +91,12 @@ public partial class TerminalHostView : UserControl
         {
             case "ready":
                 _webReady = true;
-                foreach (var id in _host!.ActiveSessionIds)
+                // Report the measured grid first: queued sessions spawn at the right
+                // size (raising SessionStarted -> CreateTerminal for each).
+                _host!.SetViewGridSize(
+                    root.GetProperty("cols").GetInt32(),
+                    root.GetProperty("rows").GetInt32());
+                foreach (var id in _host.ActiveSessionIds)
                     CreateTerminal(id);
                 ShowActiveTerminal();
                 break;

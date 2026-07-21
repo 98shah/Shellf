@@ -13,26 +13,29 @@ public sealed class ShellCatalogService : IShellCatalogService
     //              persists where each shell actually is, not where it started.
     //   OSC 133  — command block marks (D = done, A = prompt start, B = input starts);
     //              xterm.js draws a separator line at each block.
-    // The leading `n prints the spacer row the separator is drawn in; it is skipped for
-    // the first prompt after Clear-Host so a cleared screen starts at the top.
-    // 38;2;0;255;0 renders the prompt itself in #00FF00 (truecolor ANSI).
+    // Bottom-anchored input, self-healing: every prompt measures how far the cursor
+    // sits above the window's last row and pads exactly that gap — zero in normal
+    // flow, a full screen on the first prompt or after clear/Ctrl+L, and whatever a
+    // full-screen app (vim, Claude Code) left behind on exit. The input line
+    // therefore always renders on the bottom row, and output scrolls up above it.
+    // Sessions spawn only after the terminal view reports the real grid size (see
+    // TerminalHostService), so the measured window height is reliable from the
+    // first prompt. The `n spacer row (used by the block separator) is skipped
+    // whenever padding occurs. 38;2;0;255;0 renders the prompt in #00FF00.
     // Works for both Windows PowerShell and PowerShell 7 (pwsh).
     private const string PowerShellPromptHook = """
         $global:__ShellfPrompt = $function:prompt
-        $global:__ShellfClearHost = ${function:Clear-Host}
-        function global:Clear-Host {
-            & $global:__ShellfClearHost
-            $global:__ShellfCleared = $true
-        }
         function global:prompt {
             $p = $ExecutionContext.SessionState.Path.CurrentLocation.ProviderPath
             $e = [char]27
+            $gap = [Console]::WindowTop + [Console]::WindowHeight - 1 - [Console]::CursorTop
+            $pad = ""
             $spacer = "`n"
-            if ($global:__ShellfCleared) {
-                $global:__ShellfCleared = $false
+            if ($gap -gt 0) {
+                $pad = "`n" * $gap
                 $spacer = ""
             }
-            "$e]133;D$e\$spacer$e]133;A$e\$e[38;2;0;255;0m" + (& $global:__ShellfPrompt) + "$e[0m$e]9;9;`"$p`"$e\$e]133;B$e\"
+            "$pad$e]133;D$e\$spacer$e]133;A$e\$e[38;2;0;255;0m" + (& $global:__ShellfPrompt) + "$e[0m$e]9;9;`"$p`"$e\$e]133;B$e\"
         }
         """;
 
@@ -52,8 +55,10 @@ public sealed class ShellCatalogService : IShellCatalogService
             shells.Add(new ShellDefinition("PowerShell 7", pwsh, PowerShellArguments));
 
         // cmd gets its cwd/block markers via the PROMPT environment variable, and
-        // Git Bash via PROMPT_COMMAND (see TerminalHostService).
-        shells.Add(new ShellDefinition("Command Prompt", Path.Combine(system32, "cmd.exe"), string.Empty));
+        // Git Bash via PROMPT_COMMAND (see TerminalHostService). The /K loop scrolls
+        // blank lines so cmd's first prompt is bottom-anchored like the other shells
+        // (200 overshoots any pane height; the surplus lands in scrollback).
+        shells.Add(new ShellDefinition("Command Prompt", Path.Combine(system32, "cmd.exe"), "/K \"for /L %i in (1,1,200) do @echo.\""));
 
         if (FindGitBash() is { } gitBash)
             shells.Add(new ShellDefinition("Git Bash", gitBash, "--login -i"));

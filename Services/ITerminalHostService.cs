@@ -17,7 +17,14 @@ public interface ITerminalHostService
 {
     IReadOnlyList<string> ActiveSessionIds { get; }
 
+    /// <summary>Starts a session — or queues it until the terminal view has reported
+    /// its real grid size, so shells spawn at the correct dimensions and never get
+    /// an initial resize (which would break bottom-anchored prompts).</summary>
     void StartSession(string sessionId, string shellPath, string arguments, string workingDirectory);
+
+    /// <summary>Called by the terminal view once it has measured the pane's cell grid;
+    /// spawns any queued sessions at that size.</summary>
+    void SetViewGridSize(int cols, int rows);
 
     /// <summary>Raw input from the terminal view (keystrokes, escape sequences).</summary>
     void SendInput(string sessionId, string data);

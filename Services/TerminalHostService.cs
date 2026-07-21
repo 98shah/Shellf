@@ -25,7 +25,11 @@ public sealed class TerminalHostService : ITerminalHostService
         public byte[] CwdCarry = [];
     }
 
+    private sealed record PendingSession(string SessionId, string ShellPath, string Arguments, string WorkingDirectory);
+
     private readonly Dictionary<string, HostedSession> _sessions = [];
+    private readonly List<PendingSession> _pending = [];
+    private (int Cols, int Rows)? _gridSize;
     private readonly object _sessionsGate = new();
 
     public event EventHandler<TerminalOutputEventArgs>? OutputReceived;
@@ -44,13 +48,13 @@ public sealed class TerminalHostService : ITerminalHostService
             "$E]133;D$E\\$_$E]133;A$E\\$E]9;9;$P$E\\$E[38;2;0;255;0m$P$G$E[0m$E]133;B$E\\");
 
         // Git Bash runs PROMPT_COMMAND (inherited from the environment) before every
-        // prompt: same block marks + spacer, and the cwd translated to a Windows path
-        // via cygpath. A user bashrc that overwrites PROMPT_COMMAND simply loses the
-        // integration, gracefully. WSL does not inherit Windows env vars, so it is
-        // unaffected.
+        // prompt: same block marks + spacer, the cwd translated to a Windows path via
+        // cygpath, and a one-time pad so the first prompt is bottom-anchored. A user
+        // bashrc that overwrites PROMPT_COMMAND simply loses the integration,
+        // gracefully. WSL does not inherit Windows env vars, so it is unaffected.
         Environment.SetEnvironmentVariable(
             "PROMPT_COMMAND",
-            @"printf '\e]133;D\e\\\n\e]133;A\e\\\e]9;9;""%s""\e\\' ""$(cygpath -w ""$PWD"" 2>/dev/null || pwd)""");
+            @"if [ -z ""$__shellf_anchored"" ]; then __shellf_anchored=1; printf '\n%.0s' $(seq 1 200); fi; printf '\e]133;D\e\\\n\e]133;A\e\\\e]9;9;""%s""\e\\' ""$(cygpath -w ""$PWD"" 2>/dev/null || pwd)""");
     }
 
     public IReadOnlyList<string> ActiveSessionIds
@@ -60,6 +64,46 @@ public sealed class TerminalHostService : ITerminalHostService
 
     public void StartSession(string sessionId, string shellPath, string arguments, string workingDirectory)
     {
+        lock (_sessionsGate)
+        {
+            if (_gridSize is null)
+            {
+                // The view hasn't measured the pane yet; spawning now would mean a
+                // resize (and a conhost repaint that breaks prompt anchoring).
+                _pending.Add(new PendingSession(sessionId, shellPath, arguments, workingDirectory));
+                return;
+            }
+        }
+
+        StartSessionCore(sessionId, shellPath, arguments, workingDirectory);
+    }
+
+    public void SetViewGridSize(int cols, int rows)
+    {
+        List<PendingSession> toSpawn;
+        lock (_sessionsGate)
+        {
+            _gridSize = (cols, rows);
+            toSpawn = [.. _pending];
+            _pending.Clear();
+        }
+
+        foreach (var pending in toSpawn)
+        {
+            try
+            {
+                StartSessionCore(pending.SessionId, pending.ShellPath, pending.Arguments, pending.WorkingDirectory);
+            }
+            catch (Exception)
+            {
+                // A shell that fails this late (uninstalled mid-session) just yields
+                // a dead tab; the catalog filter prevents this in normal flows.
+            }
+        }
+    }
+
+    private void StartSessionCore(string sessionId, string shellPath, string arguments, string workingDirectory)
+    {
         var commandLine = string.IsNullOrWhiteSpace(arguments)
             ? $"\"{shellPath}\""
             : $"\"{shellPath}\" {arguments}";
@@ -67,7 +111,11 @@ public sealed class TerminalHostService : ITerminalHostService
             ? workingDirectory
             : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        var pty = ConPtySession.Start(commandLine, directory, DefaultCols, DefaultRows);
+        (int Cols, int Rows) size;
+        lock (_sessionsGate)
+            size = _gridSize ?? (DefaultCols, DefaultRows);
+
+        var pty = ConPtySession.Start(commandLine, directory, size.Cols, size.Rows);
         var session = new HostedSession { Pty = pty, CurrentDirectory = directory };
 
         lock (_sessionsGate)
@@ -98,6 +146,7 @@ public sealed class TerminalHostService : ITerminalHostService
         HostedSession? session;
         lock (_sessionsGate)
         {
+            _pending.RemoveAll(p => p.SessionId == sessionId);
             if (_sessions.Remove(sessionId, out session) is false)
                 return;
         }

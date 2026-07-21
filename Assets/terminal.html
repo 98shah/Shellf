@@ -14,7 +14,7 @@
        be fitted to their real dimensions BEFORE any output is written into them.
        If a terminal's grid ever differs from what ConPTY believes, the shell's absolute
        cursor addressing paints in the wrong places. */
-    .term { position: absolute; inset: 0; padding: 10px 4px 10px 12px; visibility: hidden; }
+    .term { position: absolute; inset: 0; padding: 10px 6px 16px 14px; visibility: hidden; }
     .term.active { visibility: visible; }
 </style>
 </head>
@@ -75,7 +75,7 @@
         // preceded by a spacer row (the shell prints a blank line before the prompt);
         // the separator is drawn vertically centered in that spacer row, so command
         // blocks are divided by a line with breathing room on both sides.
-        const blocks = { firstPrompt: true, separators: [] };
+        const blocks = { firstPrompt: true, separators: [], inputBand: null };
 
         // Clear-screen (CSI 2J/3J, i.e. clear/cls/Ctrl+L) erases the text but would
         // leave the separator decorations hanging on the emptied rows — dispose them
@@ -84,13 +84,41 @@
             if (params[0] === 2 || params[0] === 3) {
                 for (const sep of blocks.separators) sep.dispose();
                 blocks.separators.length = 0;
+                if (blocks.inputBand) { blocks.inputBand.dispose(); blocks.inputBand = null; }
                 blocks.firstPrompt = true;
             }
             return false; // always let xterm's own handler run as well
         });
 
         term.parser.registerOscHandler(133, data => {
-            if (data[0] !== "A") return true;   // only prompt-start draws a line
+            if (data[0] !== "A") return true;   // prompt-start drives all block visuals
+
+            // Input-field chrome on the prompt row: taller than the text line with
+            // the text vertically centered, extended past the text's left edge, and
+            // fully bordered — so the bottom-anchored line reads as a real input box.
+            // The blank spacer row above belongs to the box's outer margin, so shell
+            // output always ends before the box.
+            if (blocks.inputBand) blocks.inputBand.dispose();
+            const bandMarker = term.registerMarker(0);
+            if (bandMarker) {
+                const band = term.registerDecoration({ marker: bandMarker });
+                if (band) {
+                    band.onRender(el => {
+                        let cell = 17;
+                        try { cell = term._core._renderService.dimensions.css.cell.height || 17; } catch (e) {}
+                        el.style.width = "calc(100% + 12px)";
+                        el.style.marginLeft = "-8px";
+                        el.style.height = (cell + 12) + "px";
+                        el.style.transform = "translateY(-6px)";
+                        el.style.background = "rgba(255,255,255,0.05)";
+                        el.style.border = "1px solid rgba(255,255,255,0.14)";
+                        el.style.boxSizing = "border-box";
+                        el.style.pointerEvents = "none";
+                    });
+                    blocks.inputBand = band;
+                }
+            }
+
             if (blocks.firstPrompt) { blocks.firstPrompt = false; return true; }
             const marker = term.registerMarker(-1); // the spacer row above the prompt
             if (marker) {
@@ -100,10 +128,10 @@
                         el.style.width = "100%";
                         el.style.background =
                             "linear-gradient(to bottom," +
-                            " transparent calc(50% - 1px)," +
-                            " rgba(255,255,255,0.28) calc(50% - 1px)," +
-                            " rgba(255,255,255,0.28) 50%," +
-                            " transparent 50%)";
+                            " transparent calc(32% - 1px)," +
+                            " rgba(255,255,255,0.28) calc(32% - 1px)," +
+                            " rgba(255,255,255,0.28) 32%," +
+                            " transparent 32%)";
                         el.style.pointerEvents = "none";
                     });
                     blocks.separators.push(deco);
@@ -112,7 +140,15 @@
             }
             return true;
         });
-        term.onData(data => HOST.postMessage({ type: "input", id, data }));
+        term.onData(data => {
+            // Enter submits: hide the input box while the command runs so it never
+            // scrolls along with the executed line; it reappears at the next prompt.
+            if (data.includes("\r") && blocks.inputBand) {
+                blocks.inputBand.dispose();
+                blocks.inputBand = null;
+            }
+            HOST.postMessage({ type: "input", id, data });
+        });
         term.onResize(size => HOST.postMessage({ type: "resize", id, cols: size.cols, rows: size.rows }));
         term.open(el);
 
@@ -167,7 +203,25 @@
         }, 50);
     });
 
-    HOST.postMessage({ type: "ready" });
+    // Measure the pane's cell grid before any session spawns, so shells start at
+    // the right size and never receive an initial resize (which would repaint and
+    // break bottom-anchored prompts).
+    function measureGrid() {
+        const el = document.createElement("div");
+        el.className = "term active";
+        document.body.appendChild(el);
+        const probe = new Terminal({ fontFamily: '"Cascadia Mono", Consolas, monospace', fontSize: 14 });
+        const probeFit = new FitAddon.FitAddon();
+        probe.loadAddon(probeFit);
+        probe.open(el);
+        const dims = probeFit.proposeDimensions();
+        probe.dispose();
+        el.remove();
+        return dims && dims.cols > 0 && dims.rows > 0 ? dims : { cols: 120, rows: 30 };
+    }
+
+    const grid = measureGrid();
+    HOST.postMessage({ type: "ready", cols: grid.cols, rows: grid.rows });
 </script>
 </body>
 </html>

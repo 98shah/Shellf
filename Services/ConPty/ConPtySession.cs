@@ -20,6 +20,9 @@ public sealed class ConPtySession : IDisposable
     private readonly FileStream _outputReader;
     private readonly Process _process;
     private readonly object _writeLock = new();
+    // Serializes Resize against Dispose: ClosePseudoConsole frees the HPCON, so a
+    // concurrent ResizePseudoConsole would be a use-after-free, not just an error.
+    private readonly object _consoleLock = new();
     private volatile bool _disposed;
 
     public event EventHandler<byte[]>? OutputReceived;
@@ -119,31 +122,40 @@ public sealed class ConPtySession : IDisposable
 
     public void Resize(int cols, int rows)
     {
-        if (_disposed || cols < 1 || rows < 1)
+        if (cols < 1 || rows < 1)
             return;
-        ResizePseudoConsole(_console, new COORD { X = (short)cols, Y = (short)rows });
+
+        lock (_consoleLock)
+        {
+            if (_disposed)
+                return;
+            ResizePseudoConsole(_console, new COORD { X = (short)cols, Y = (short)rows });
+        }
     }
 
-    public void Dispose()
+    public void Dispose() // idempotent and thread-safe: called on tab close, app exit, and self-exit reap
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-
-        try
+        lock (_consoleLock)
         {
-            if (!_process.HasExited)
-                _process.Kill(entireProcessTree: true);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
-        {
-            // Already exited between the check and the kill.
-        }
+            if (_disposed)
+                return;
+            _disposed = true;
 
-        ClosePseudoConsole(_console); // also unblocks the read loop
-        _inputWriter.Dispose();
-        _outputReader.Dispose();
-        _process.Dispose();
+            try
+            {
+                if (!_process.HasExited)
+                    _process.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+            {
+                // Already exited between the check and the kill.
+            }
+
+            ClosePseudoConsole(_console); // also unblocks the read loop
+            _inputWriter.Dispose();
+            _outputReader.Dispose();
+            _process.Dispose();
+        }
     }
 
     private static Process SpawnAttachedProcess(string commandLine, string workingDirectory, IntPtr console)
@@ -178,10 +190,18 @@ public sealed class ConPtySession : IDisposable
                     throw new Win32Exception();
 
                 CloseHandle(processInfo.hThread);
-                var process = Process.GetProcessById(processInfo.dwProcessId);
-                CloseHandle(processInfo.hProcess);
-                KillOnCloseJob.Assign(process);
-                return process;
+                try
+                {
+                    // Throws if the child died instantly (bad arguments etc.);
+                    // hProcess must be closed on that path too.
+                    var process = Process.GetProcessById(processInfo.dwProcessId);
+                    KillOnCloseJob.Assign(process);
+                    return process;
+                }
+                finally
+                {
+                    CloseHandle(processInfo.hProcess);
+                }
             }
             finally
             {

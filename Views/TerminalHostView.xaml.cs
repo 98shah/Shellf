@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -79,6 +80,7 @@ public partial class TerminalHostView : UserControl
             Path.Combine(AppContext.BaseDirectory, "Assets"),
             CoreWebView2HostResourceAccessKind.Allow);
         core.WebMessageReceived += OnWebMessage;
+        core.ProcessFailed += (_, args) => Dispatcher.InvokeAsync(() => OnWebProcessFailed(args));
         core.Navigate("https://shellf.assets/terminal.html");
     }
 
@@ -149,9 +151,59 @@ public partial class TerminalHostView : UserControl
             Web.Focus();
     }
 
+    /// <summary>
+    /// WebView2 processes live outside ours and can die independently; that must
+    /// never take the shells down with it.
+    /// </summary>
+    private void OnWebProcessFailed(CoreWebView2ProcessFailedEventArgs e)
+    {
+        switch (e.ProcessFailedKind)
+        {
+            case CoreWebView2ProcessFailedKind.RenderProcessExited:
+            case CoreWebView2ProcessFailedKind.RenderProcessUnresponsive:
+                // The page is gone or hung but the browser process survives.
+                // Reload: the page's "ready" handshake then recreates every
+                // terminal from its replay buffer, which is why _writtenTo must
+                // forget what the dead page had been sent.
+                _webReady = false;
+                _writtenTo.Clear();
+                try
+                {
+                    Web.CoreWebView2.Reload();
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or COMException)
+                {
+                    // The browser process died in the meantime; handled below on
+                    // its own ProcessFailed event.
+                }
+                break;
+
+            case CoreWebView2ProcessFailedKind.BrowserProcessExited:
+                // The whole runtime is gone and this CoreWebView2 is invalid; it
+                // cannot be revived in place. Terminals go dark until the app is
+                // relaunched, but the shells stay alive and the app keeps running.
+                _webReady = false;
+                _writtenTo.Clear();
+                break;
+
+            // GPU/utility/frame process failures: WebView2 recovers these itself.
+        }
+    }
+
     private void Post(object message)
     {
-        if (_webReady)
+        if (!_webReady)
+            return;
+
+        try
+        {
             Web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or COMException)
+        {
+            // Core died between the ProcessFailed event and this post; stop
+            // posting until a reload reports "ready" again.
+            _webReady = false;
+        }
     }
 }

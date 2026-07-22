@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Shellf.Services;
@@ -11,6 +12,10 @@ namespace Shellf;
 /// </summary>
 public partial class App : Application
 {
+    // Next to workspace.json, so a bug report can include both.
+    private static readonly string CrashLogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Shellf", "crash.log");
+
     private ServiceProvider? _services;
 
     /// <summary>Used by views that XAML instantiates (e.g. TerminalHostView) to reach services.</summary>
@@ -20,6 +25,22 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // A UI-thread throw is logged and swallowed: losing one interaction beats
+        // tearing down every live shell. The other two sources cannot be recovered,
+        // but at least they leave a stack trace behind.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            LogCrash("UI thread", args.Exception);
+            args.Handled = true;
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            LogCrash("Unhandled", args.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            LogCrash("Background task", args.Exception);
+            args.SetObserved();
+        };
 
         _services = new ServiceCollection()
             .AddSingleton<IWorkspaceStorageService, WorkspaceStorageService>()
@@ -40,5 +61,20 @@ public partial class App : Application
         _services?.GetRequiredService<ITerminalHostService>().DisposeAll();
         _services?.Dispose();
         base.OnExit(e);
+    }
+
+    private static void LogCrash(string source, Exception? exception)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(CrashLogPath)!);
+            File.AppendAllText(
+                CrashLogPath,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {source}{Environment.NewLine}{exception}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch (Exception)
+        {
+            // The logger itself must never take the app down.
+        }
     }
 }

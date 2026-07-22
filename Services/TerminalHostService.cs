@@ -8,6 +8,10 @@ public sealed class TerminalHostService : ITerminalHostService
 {
     // Per-session replay cap; enough to repaint a screenful plus scrollback context.
     private const int ReplayCapacity = 256 * 1024;
+
+    // Grace period between a shell's own exit and releasing its pty, so the read
+    // loop can drain trailing output still buffered in conhost's pipe.
+    private static readonly TimeSpan ExitReapDelay = TimeSpan.FromSeconds(1);
     private const int DefaultCols = 120;
     private const int DefaultRows = 30;
 
@@ -121,8 +125,15 @@ public sealed class TerminalHostService : ITerminalHostService
             _sessions[sessionId] = session;
 
         pty.OutputReceived += (_, data) => Emit(sessionId, session, data);
-        pty.Exited += (_, _) => Emit(sessionId, session,
-            Encoding.UTF8.GetBytes("\r\n\x1b[90m[session ended]\x1b[0m\r\n"));
+        pty.Exited += (_, _) =>
+        {
+            Emit(sessionId, session, Encoding.UTF8.GetBytes("\r\n\x1b[90m[session ended]\x1b[0m\r\n"));
+            // Release the pty (HPCON, pipes, process handle) once trailing output
+            // has drained. The session entry and its replay buffer stay: the tab
+            // keeps rendering "[session ended]" plus scrollback until the user
+            // closes it, and CloseSession's second Dispose is a safe no-op.
+            _ = Task.Delay(ExitReapDelay).ContinueWith(_ => session.Pty.Dispose());
+        };
 
         SessionStarted?.Invoke(this, sessionId);
         pty.BeginOutput(); // only after subscribers are wired, so nothing is missed
@@ -201,7 +212,7 @@ public sealed class TerminalHostService : ITerminalHostService
     private void Emit(string sessionId, HostedSession session, byte[] data)
     {
         long offset;
-        string? changedCwd;
+        string? candidateCwd;
         lock (session.Gate)
         {
             offset = session.TotalEmitted;
@@ -211,9 +222,10 @@ public sealed class TerminalHostService : ITerminalHostService
             while (session.BufferedBytes > ReplayCapacity && session.Chunks.Count > 1)
                 session.BufferedBytes -= session.Chunks.Dequeue().Length;
 
-            changedCwd = ScanForCwd(session, data);
+            candidateCwd = ScanForCwd(session, data);
         }
 
+        var changedCwd = candidateCwd is null ? null : CommitCwd(session, candidateCwd);
         if (changedCwd is not null)
             CurrentDirectoryChanged?.Invoke(this, new TerminalCwdEventArgs(sessionId, changedCwd));
 
@@ -221,10 +233,34 @@ public sealed class TerminalHostService : ITerminalHostService
     }
 
     /// <summary>
-    /// Tracks the latest OSC 9;9 cwd marker in the output stream. Called with the
-    /// session gate held; returns the new path when it differs from the last known
-    /// one (so callers can raise a change event), else null. Sequences may split
-    /// across chunks, so an incomplete match is carried over (bounded) and re-scanned.
+    /// Validates a parsed cwd candidate and records it. Runs outside the session
+    /// gate: the <see cref="Directory.Exists"/> stat can stall on network paths and
+    /// must not block <see cref="GetReplay"/> or the output pump. Prompts repeat the
+    /// same cwd every time, so the unchanged case never touches the filesystem.
+    /// Only the read-loop thread commits, so the check-then-set cannot race itself.
+    /// </summary>
+    private static string? CommitCwd(HostedSession session, string path)
+    {
+        lock (session.Gate)
+        {
+            if (string.Equals(session.CurrentDirectory, path, StringComparison.OrdinalIgnoreCase))
+                return null;
+        }
+
+        if (!Directory.Exists(path))
+            return null;
+
+        lock (session.Gate)
+            session.CurrentDirectory = path;
+        return path;
+    }
+
+    /// <summary>
+    /// Finds the latest complete OSC 9;9 cwd marker in the output stream. Called
+    /// with the session gate held; pure parsing — returns the candidate path (or
+    /// null) for <see cref="CommitCwd"/> to validate outside the lock. Sequences may
+    /// split across chunks, so an incomplete match is carried over (bounded) and
+    /// re-scanned.
     /// </summary>
     private static string? ScanForCwd(HostedSession session, byte[] chunk)
     {
@@ -280,13 +316,7 @@ public sealed class TerminalHostService : ITerminalHostService
 
         var path = Encoding.UTF8.GetString(data, start, end - start).Trim('"');
         session.CwdCarry = KeepTail(data, OscCwdPrefix.Length - 1);
-
-        if (path.Length == 0 || !Directory.Exists(path) ||
-            string.Equals(session.CurrentDirectory, path, StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        session.CurrentDirectory = path;
-        return path;
+        return path.Length == 0 ? null : path;
     }
 
     private static byte[] KeepTail(byte[] data, int count) =>

@@ -21,8 +21,10 @@ public sealed class ColorHexToAccentBrushConverter : IValueConverter
                 brush.Freeze();
                 return brush;
             }
-            catch (FormatException)
+            catch (Exception)
             {
+                // ConvertFromString throws more than FormatException on some
+                // malformed config values; any parse failure means the fallback.
             }
         }
         return Application.Current.TryFindResource("Brush.Text") ?? Brushes.White;
@@ -65,9 +67,10 @@ public sealed class ColorHexToBrushConverter : IValueConverter
                 brush.Freeze();
                 return brush;
             }
-            catch (FormatException)
+            catch (Exception)
             {
-                // Fall through to transparent on a malformed value in the config file.
+                // Fall through to transparent on a malformed value in the config
+                // file, whatever exception type the parser chose to throw.
             }
         }
         return Brushes.Transparent;

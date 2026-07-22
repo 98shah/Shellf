@@ -36,6 +36,9 @@ public interface ITerminalHostService
     /// <summary>Buffered output so far and the stream offset it ends at.</summary>
     (byte[] Data, long EndOffset) GetReplay(string sessionId);
 
+    /// <summary>The executable the session was started with, or null if unknown.</summary>
+    string? GetShellPath(string sessionId);
+
     /// <summary>
     /// The shell's current directory as last reported via its OSC 9;9 prompt marker,
     /// or null when the shell has not reported one (e.g. WSL).

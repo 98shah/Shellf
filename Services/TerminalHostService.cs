@@ -17,6 +17,7 @@ public sealed class TerminalHostService : ITerminalHostService
     private sealed class HostedSession
     {
         public required ConPtySession Pty { get; init; }
+        public required string ShellPath { get; init; }
         public readonly object Gate = new();
         public readonly Queue<byte[]> Chunks = new();
         public int BufferedBytes;
@@ -116,7 +117,7 @@ public sealed class TerminalHostService : ITerminalHostService
             size = _gridSize ?? (DefaultCols, DefaultRows);
 
         var pty = ConPtySession.Start(commandLine, directory, size.Cols, size.Rows);
-        var session = new HostedSession { Pty = pty, CurrentDirectory = directory };
+        var session = new HostedSession { Pty = pty, ShellPath = shellPath, CurrentDirectory = directory };
 
         lock (_sessionsGate)
             _sessions[sessionId] = session;
@@ -172,6 +173,9 @@ public sealed class TerminalHostService : ITerminalHostService
             return (data, session.TotalEmitted);
         }
     }
+
+    public string? GetShellPath(string sessionId)
+        => TryGet(sessionId, out var session) ? session.ShellPath : null;
 
     public string? GetCurrentDirectory(string sessionId)
     {

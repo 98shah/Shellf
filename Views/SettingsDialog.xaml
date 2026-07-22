@@ -33,7 +33,7 @@
                                             BorderThickness="1.5"/>
                                     <Path x:Name="Check"
                                           Data="M20 6 9 17 4 12"
-                                          Stroke="#141414" StrokeThickness="2.5"
+                                          Stroke="#0A0A0A" StrokeThickness="2.5"
                                           StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                           Stretch="Uniform" Width="9" Height="9"
                                           Visibility="Collapsed"/>

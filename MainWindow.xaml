@@ -361,9 +361,11 @@
                         <Image Source="{Binding SelectedTab.ShellPath, Converter={StaticResource ShellIcon}}"
                                Width="13" Height="13" VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding SelectedTab.Title}" FontWeight="SemiBold"
+                                   FontFamily="Geist Mono" Foreground="{StaticResource Brush.Neon}"
                                    Margin="8,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Text="{Binding SelectedTab.CurrentDirectory}"
-                                   Foreground="{StaticResource Brush.TextMuted}" FontSize="11.5"
+                                   FontFamily="Geist Mono" Foreground="{StaticResource Brush.NeonDim}"
+                                   FontSize="11.5"
                                    Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">

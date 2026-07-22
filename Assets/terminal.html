@@ -5,24 +5,21 @@
 <link rel="stylesheet" href="xterm.css"/>
 <style>
     html, body { margin: 0; height: 100%; background: #000000; overflow: hidden; }
-    /* Slim dark scrollbar matching the app chrome */
-    .xterm-viewport::-webkit-scrollbar { width: 8px; }
-    .xterm-viewport::-webkit-scrollbar-track { background: #000000; }
-    .xterm-viewport::-webkit-scrollbar-thumb { background: #3A3A3A; }
-    .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4A4A55; }
+    /* Terminal scrollbar: slim gutter matching the sidebar's, permanently reserved
+       beside the text (fit subtracts its width from the grid, so no overlap and no
+       shift on reveal). Invisible until the pointer is near the right edge
+       (.scroll-hot, toggled in JS). */
+    .xterm-viewport::-webkit-scrollbar { width: 5px; }
+    .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+    .xterm-viewport::-webkit-scrollbar-thumb { background: transparent; }
+    .term.scroll-hot .xterm-viewport::-webkit-scrollbar-thumb { background: #3A3A3A; }
+    .term.scroll-hot .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4A4A55; }
     /* visibility (not display): hidden panes keep their layout size, so terminals can
        be fitted to their real dimensions BEFORE any output is written into them.
        If a terminal's grid ever differs from what ConPTY believes, the shell's absolute
        cursor addressing paints in the wrong places. */
     .term { position: absolute; inset: 0; padding: 10px 6px 12px 14px; visibility: hidden; }
     .term.active { visibility: visible; }
-    /* Input signifier: a subtle hairline ABOVE the bottom-anchored prompt row(s),
-       marking where the input area starts. A pane-fixed overlay (not a buffer
-       decoration), positioned per session in JS from the measured cell height. */
-    .input-line {
-        position: absolute; left: 0; right: 0; height: 1px;
-        background: rgba(255,255,255,0.14); pointer-events: none;
-    }
 </style>
 </head>
 <body>
@@ -30,6 +27,9 @@
 <script src="xterm-addon-fit.js"></script>
 <script>
     // One xterm.js instance per Shellf session, all hosted in this single page.
+    // Plain interactive terminals: keystrokes go straight to the pty. The shells
+    // still emit OSC 9;9 (cwd, parsed by TerminalHostService) and OSC 133 block
+    // marks — unhandled here for now, reserved for the block UI planned next version.
     // Protocol with C# (TerminalHostView):
     //   C# -> JS: {type:'create', id, data(b64)} {type:'write', id, data(b64)} {type:'show', id} {type:'dispose', id}
     //   JS -> C#: {type:'ready'} {type:'input', id, data} {type:'resize', id, cols, rows}
@@ -58,15 +58,22 @@
         // not change (fit fires onResize only on a change), and the resize makes
         // conhost repaint the viewport, which self-heals any stale content.
         HOST.postMessage({ type: "resize", id, cols: s.term.cols, rows: s.term.rows });
-        if (s.positionLine) s.positionLine();
     }
 
-    function create(id, initialB64, promptRows) {
+    function create(id, initialB64) {
         if (sessions.has(id)) return;
 
         const el = document.createElement("div");
         el.className = "term";
         document.body.appendChild(el);
+
+        // Reveal the scrollbar only while the pointer is in the right-edge gutter
+        // (a tracked zone, not an overlay div, so text selection stays unaffected).
+        el.addEventListener("mousemove", ev => {
+            const r = el.getBoundingClientRect();
+            el.classList.toggle("scroll-hot", r.right - ev.clientX <= 24);
+        });
+        el.addEventListener("mouseleave", () => el.classList.remove("scroll-hot"));
 
         const term = new Terminal({
             theme: THEME,
@@ -79,121 +86,11 @@
         const fit = new FitAddon.FitAddon();
         term.loadAddon(fit);
 
-        // OSC 133 command marks (emitted by the shell prompt hooks): each new prompt is
-        // preceded by a spacer row (the shell prints a blank line before the prompt);
-        // the separator is drawn vertically centered in that spacer row, so command
-        // blocks are divided by a line with breathing room on both sides.
-        const blocks = { firstPrompt: true, separators: [], selfClear: false, drained: false, pendingSep: null };
-
-        function revealPendingSep() {
-            const sep = blocks.pendingSep;
-            if (!sep) return;
-            sep.revealed = true;
-            if (sep.node) sep.node.style.visibility = "visible";
-            blocks.pendingSep = null;
-        }
-
-        // Clear-screen erases the text but would leave the separator decorations
-        // hanging on the emptied rows — dispose them and treat the next prompt as
-        // the first one again. Must fire on 3J as well as 2J: PowerShell and cmd
-        // repaint a clear as per-line erases plus a bare 3J, never emitting 2J.
-        // selfClear exempts only the scrollback purge this pane injects itself.
-        term.parser.registerCsiHandler({ final: "J" }, params => {
-            if (params[0] === 2 || (params[0] === 3 && !blocks.selfClear)) {
-                for (const sep of blocks.separators) sep.dispose();
-                blocks.separators.length = 0;
-                blocks.firstPrompt = true;
-                blocks.drained = false; // anchor padding may re-enter scrollback
-                blocks.pendingSep = null;
-            }
-            return false; // always let xterm's own handler run as well
-        });
-
-        term.parser.registerOscHandler(133, data => {
-            if (data[0] !== "A") return true;   // prompt-start drives all block visuals
-
-            // Scroll clamp. The shells bottom-anchor by printing pad newlines, so
-            // blank rows keep leaking into scrollback (at startup, and row by row
-            // as output pushes the pad up). While scrollback holds nothing but
-            // blanks, purge it — scrolling then stops at the first real command.
-            // Once genuine output reaches scrollback, stop checking for good.
-            if (!blocks.drained) {
-                const buf = term.buffer.active;
-                if (buf.baseY > 0) {
-                    let allBlank = true;
-                    for (let i = 0; i < buf.baseY; i++) {
-                        const line = buf.getLine(i);
-                        if (line && line.translateToString(true).trim().length > 0) { allBlank = false; break; }
-                    }
-                    if (allBlank) {
-                        blocks.selfClear = true; // exempt from the clear-reset above
-                        term.write("\x1b[3J", () => { blocks.selfClear = false; });
-                    } else {
-                        blocks.drained = true;
-                    }
-                }
-            }
-
-            // A new prompt means the previous block completed: its separator (kept
-            // hidden while that prompt was the live input row) is history now.
-            revealPendingSep();
-
-            if (blocks.firstPrompt) { blocks.firstPrompt = false; return true; }
-            const marker = term.registerMarker(-1); // the spacer row above the prompt
-            if (marker) {
-                const deco = term.registerDecoration({ marker });
-                if (deco) {
-                    // Starts hidden: while this prompt is the live input row, the
-                    // pane's fixed input line already marks the boundary — showing
-                    // both would stack two lines at the bottom of the screen.
-                    const sep = { revealed: false, node: null };
-                    deco.onRender(node => {
-                        sep.node = node;
-                        // Full bleed: the decoration is sized to the cell grid, so
-                        // overshoot generously; body{overflow:hidden} clips the rest.
-                        node.style.width = "calc(100% + 60px)";
-                        node.style.marginLeft = "-14px";
-                        node.style.background =
-                            "linear-gradient(to bottom," +
-                            " transparent calc(32% - 1px)," +
-                            " rgba(255,255,255,0.14) calc(32% - 1px)," +
-                            " rgba(255,255,255,0.14) 32%," +
-                            " transparent 32%)";
-                        node.style.pointerEvents = "none";
-                        node.style.visibility = sep.revealed ? "visible" : "hidden";
-                    });
-                    blocks.separators.push(deco);
-                    if (blocks.separators.length > 300) blocks.separators.shift();
-                    blocks.pendingSep = sep;
-                }
-            }
-            return true;
-        });
-        term.onData(data => {
-            // Enter submits: this prompt's block is no longer the live input, so
-            // its separator becomes visible right as the command starts running.
-            if (data.includes("\r")) revealPendingSep();
-            HOST.postMessage({ type: "input", id, data });
-        });
+        term.onData(data => HOST.postMessage({ type: "input", id, data }));
         term.onResize(size => HOST.postMessage({ type: "resize", id, cols: size.cols, rows: size.rows }));
         term.open(el);
 
-        // The input separator sits above the whole prompt block (2 rows for bash's
-        // context+input prompt, 1 otherwise) with an 8px gap. Recomputed on every
-        // fit: the slack below the last row (content height not divisible by the
-        // cell height) moves with the pane size.
-        const inputLine = document.createElement("div");
-        inputLine.className = "input-line";
-        el.appendChild(inputLine);
-
-        const s = { term, fit, el, positionLine: null };
-        s.positionLine = () => {
-            let cell = 17;
-            try { cell = term._core._renderService.dimensions.css.cell.height || 17; } catch (e) {}
-            const content = el.clientHeight - 10 - 12;             // minus top/bottom padding
-            const slack = Math.max(0, content - term.rows * cell); // undivided leftover below the grid
-            inputLine.style.bottom = (12 + slack + (promptRows || 1) * cell + 8) + "px";
-        };
+        const s = { term, fit, el };
         sessions.set(id, s);
 
         // Order matters: reach final size FIRST, then write the replayed output.
@@ -227,7 +124,7 @@
     HOST.addEventListener("message", e => {
         const m = e.data;
         switch (m.type) {
-            case "create": create(m.id, m.data, m.promptRows); break;
+            case "create": create(m.id, m.data); break;
             case "write": { const s = sessions.get(m.id); if (s) s.term.write(b64ToBytes(m.data)); break; }
             case "show": show(m.id || ""); break;
             case "dispose": dispose(m.id); break;
@@ -245,8 +142,7 @@
     });
 
     // Measure the pane's cell grid before any session spawns, so shells start at
-    // the right size and never receive an initial resize (which would repaint and
-    // break bottom-anchored prompts).
+    // the right size and never receive an initial resize repaint.
     function measureGrid() {
         const el = document.createElement("div");
         el.className = "term active";

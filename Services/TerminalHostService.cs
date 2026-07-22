@@ -17,7 +17,6 @@ public sealed class TerminalHostService : ITerminalHostService
     private sealed class HostedSession
     {
         public required ConPtySession Pty { get; init; }
-        public required string ShellPath { get; init; }
         public readonly object Gate = new();
         public readonly Queue<byte[]> Chunks = new();
         public int BufferedBytes;
@@ -41,21 +40,20 @@ public sealed class TerminalHostService : ITerminalHostService
     public TerminalHostService()
     {
         // cmd.exe inherits PROMPT from our environment; it carries the same invisible
-        // markers the PowerShell prompt hook emits (OSC 133 block marks + OSC 9;9 cwd),
-        // plus $_ for the block-spacer row and #00FF00 truecolor on the visible prompt.
-        // Other shells ignore it.
+        // markers the PowerShell prompt hook emits (OSC 133 block marks + OSC 9;9 cwd)
+        // plus the visible prompt in neon #00FF00 truecolor. Other shells ignore it.
         Environment.SetEnvironmentVariable(
             "PROMPT",
-            "$E]133;D$E\\$_$E]133;A$E\\$E]9;9;$P$E\\$E[38;2;0;255;0m$P$G$E[0m$E]133;B$E\\");
+            "$E]133;D$E\\$E]133;A$E\\$E]9;9;$P$E\\$E[38;2;0;255;0m$P$G$E[0m$E]133;B$E\\");
 
         // Git Bash runs PROMPT_COMMAND (inherited from the environment) before every
-        // prompt: same block marks + spacer, the cwd translated to a Windows path via
-        // cygpath, and a one-time pad so the first prompt is bottom-anchored. A user
-        // bashrc that overwrites PROMPT_COMMAND simply loses the integration,
-        // gracefully. WSL does not inherit Windows env vars, so it is unaffected.
+        // prompt: block marks + the cwd as a Windows path via cygpath; bash's own PS1
+        // stays untouched. A user bashrc that overwrites PROMPT_COMMAND simply loses
+        // the integration, gracefully. WSL does not inherit Windows env vars, so it
+        // is unaffected.
         Environment.SetEnvironmentVariable(
             "PROMPT_COMMAND",
-            @"if [ -z ""$__shellf_anchored"" ]; then __shellf_anchored=1; printf '\n%.0s' $(seq 1 200); fi; printf '\e]133;D\e\\\n\e]133;A\e\\\e]9;9;""%s""\e\\' ""$(cygpath -w ""$PWD"" 2>/dev/null || pwd)""");
+            @"printf '\e]133;D\e\\\e]133;A\e\\\e]9;9;""%s""\e\\' ""$(cygpath -w ""$PWD"" 2>/dev/null || pwd)""");
     }
 
     public IReadOnlyList<string> ActiveSessionIds
@@ -117,7 +115,7 @@ public sealed class TerminalHostService : ITerminalHostService
             size = _gridSize ?? (DefaultCols, DefaultRows);
 
         var pty = ConPtySession.Start(commandLine, directory, size.Cols, size.Rows);
-        var session = new HostedSession { Pty = pty, ShellPath = shellPath, CurrentDirectory = directory };
+        var session = new HostedSession { Pty = pty, CurrentDirectory = directory };
 
         lock (_sessionsGate)
             _sessions[sessionId] = session;
@@ -173,9 +171,6 @@ public sealed class TerminalHostService : ITerminalHostService
             return (data, session.TotalEmitted);
         }
     }
-
-    public string? GetShellPath(string sessionId)
-        => TryGet(sessionId, out var session) ? session.ShellPath : null;
 
     public string? GetCurrentDirectory(string sessionId)
     {

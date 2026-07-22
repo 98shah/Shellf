@@ -123,13 +123,7 @@ public partial class TerminalHostView : UserControl
 
         var (data, endOffset) = _host.GetReplay(sessionId);
         _writtenTo[sessionId] = endOffset;
-
-        // Git Bash renders a two-row prompt (context line + $ input line); the page
-        // positions the input separator line above the whole prompt block.
-        var shell = Path.GetFileName(_host.GetShellPath(sessionId) ?? string.Empty);
-        var promptRows = shell.Equals("bash.exe", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
-
-        Post(new { type = "create", id = sessionId, data = Convert.ToBase64String(data), promptRows });
+        Post(new { type = "create", id = sessionId, data = Convert.ToBase64String(data) });
     }
 
     private void ForwardOutput(TerminalOutputEventArgs e)

@@ -39,6 +39,9 @@ public partial class MainWindow : Window
             // false: close without saving
         }
 
+        if (!e.Cancel && DataContext is MainWindowViewModel closingViewModel)
+            closingViewModel.SaveNotesQuiet();
+
         base.OnClosing(e);
     }
 
@@ -254,18 +257,68 @@ public partial class MainWindow : Window
     {
         if (_sidebarCollapsed)
         {
-            SidebarColumn.MinWidth = 180;
-            SidebarColumn.Width = _savedSidebarWidth;
-            PaneSplitter.IsEnabled = true;
+            _sidebarCollapsed = false;
+            AnimateColumn(SidebarColumn, 0, _savedSidebarWidth.Value, () =>
+            {
+                SidebarColumn.BeginAnimation(ColumnDefinition.WidthProperty, null);
+                SidebarColumn.Width = _savedSidebarWidth;
+                SidebarColumn.MinWidth = 180;
+                PaneSplitter.IsEnabled = true;
+            });
         }
         else
         {
-            _savedSidebarWidth = SidebarColumn.Width;
-            SidebarColumn.MinWidth = 0;
-            SidebarColumn.Width = new GridLength(0); // fully hidden; toggle lives in the title bar
+            _sidebarCollapsed = true;
+            if (SidebarColumn.ActualWidth > 0)
+                _savedSidebarWidth = new GridLength(SidebarColumn.ActualWidth);
             PaneSplitter.IsEnabled = false;
+            SidebarColumn.MinWidth = 0;
+            AnimateColumn(SidebarColumn, SidebarColumn.ActualWidth, 0, () =>
+            {
+                SidebarColumn.BeginAnimation(ColumnDefinition.WidthProperty, null);
+                SidebarColumn.Width = new GridLength(0); // fully hidden; toggle lives in the title bar
+            });
         }
-        _sidebarCollapsed = !_sidebarCollapsed;
+    }
+
+    private DateTime _notesClosedAt = DateTime.MinValue;
+
+    private void OnToggleNotes(object sender, RoutedEventArgs e)
+    {
+        // Clicking the button while the popup is open closes it via its own
+        // outside-click handling just before this fires — don't instantly reopen.
+        if ((DateTime.Now - _notesClosedAt).TotalMilliseconds < 250)
+            return;
+
+        NotesPopup.IsOpen = true;
+        NotesBox.Focus();
+    }
+
+    private void OnNotesPopupClosed(object? sender, EventArgs e) => _notesClosedAt = DateTime.Now;
+
+    private static void AnimateColumn(ColumnDefinition column, double from, double to, Action onCompleted)
+    {
+        var animation = new Views.GridLengthAnimation
+        {
+            From = new GridLength(from),
+            To = new GridLength(to),
+            Duration = new Duration(TimeSpan.FromMilliseconds(220)),
+            Easing = new System.Windows.Media.Animation.CubicEase
+            {
+                EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut,
+            },
+        };
+        animation.Completed += (_, _) => onCompleted();
+        column.BeginAnimation(ColumnDefinition.WidthProperty, animation);
+    }
+
+    private void OnCopyNoteToInput(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel)
+            return;
+        var text = NotesBox.SelectionLength > 0 ? NotesBox.SelectedText : NotesBox.Text;
+        viewModel.SendToActiveInput(text);
+        NotesPopup.IsOpen = false; // hand the stage back to the terminal
     }
 
     private void OnGroupHeaderClick(object sender, MouseButtonEventArgs e)

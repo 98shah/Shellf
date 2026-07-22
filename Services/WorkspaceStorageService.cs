@@ -39,4 +39,24 @@ public sealed class WorkspaceStorageService : IWorkspaceStorageService
         Directory.CreateDirectory(Path.GetDirectoryName(_configPath)!);
         File.WriteAllText(_configPath, JsonSerializer.Serialize(config, JsonOptions));
     }
+
+    public string LoadNotes()
+    {
+        try
+        {
+            return File.Exists(NotesPath) ? File.ReadAllText(NotesPath) : string.Empty;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
+    }
+
+    public void SaveNotes(string text)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(NotesPath)!);
+        File.WriteAllText(NotesPath, text);
+    }
+
+    private string NotesPath => Path.Combine(Path.GetDirectoryName(_configPath)!, "notes.txt");
 }

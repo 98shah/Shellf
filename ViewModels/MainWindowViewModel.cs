@@ -38,6 +38,10 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private string _statusText = string.Empty;
 
+    /// <summary>Free-form scratch notes shown in the right panel.</summary>
+    [ObservableProperty]
+    private string _notesText = string.Empty;
+
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
 
     public MainWindowViewModel(
@@ -50,6 +54,7 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _terminalHost = terminalHost;
         _dialogs = dialogs;
         AvailableShells = shellCatalog.GetInstalledShells();
+        _notesText = storage.LoadNotes();
 
         // Cwd reports arrive on pty read threads; the tab rows show them live.
         terminalHost.CurrentDirectoryChanged += (_, e) => _dispatcher.InvokeAsync(() =>
@@ -376,6 +381,36 @@ public sealed partial class MainWindowViewModel : ObservableObject
     }
 
     private bool HasActiveTab => SelectedTab is not null;
+
+    [RelayCommand]
+    private void SaveNotes()
+    {
+        _storage.SaveNotes(NotesText);
+        StatusText = "Notes saved.";
+    }
+
+    /// <summary>Silent notes persistence on app close — notes are low-stakes scratch
+    /// text and should never be lost, independent of the workspace save prompt.</summary>
+    public void SaveNotesQuiet()
+    {
+        try
+        {
+            _storage.SaveNotes(NotesText);
+        }
+        catch (Exception)
+        {
+            // Best effort; closing must not be blocked by a notes write failure.
+        }
+    }
+
+    /// <summary>"Copy to Input &amp; Run": places note text on the active terminal's
+    /// input line and executes it (a trailing Enter is sent).</summary>
+    public void SendToActiveInput(string text)
+    {
+        if (SelectedTab is null || string.IsNullOrWhiteSpace(text))
+            return;
+        _terminalHost.SendInput(SelectedTab.SessionId, text.TrimEnd('\r', '\n') + "\r");
+    }
 
     [RelayCommand(CanExecute = nameof(HasActiveTab))]
     private void CopyActivePath()

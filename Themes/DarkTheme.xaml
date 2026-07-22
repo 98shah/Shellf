@@ -656,6 +656,17 @@
         </DrawingImage.Drawing>
     </DrawingImage>
 
+    <!-- Lucide "sticky-note": terminal toolbar, notes panel toggle -->
+    <DrawingImage x:Key="Icon.Note">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <GeometryDrawing Brush="Transparent" Geometry="{StaticResource Geometry.IconBounds}"/>
+                <GeometryDrawing Pen="{StaticResource Pen.Icon}"
+                                 Geometry="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11l5-5V5a2 2 0 0 0-2-2Z M15 21v-4a2 2 0 0 1 2-2h4"/>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
     <!-- Lucide "copy": terminal toolbar, copy current path -->
     <DrawingImage x:Key="Icon.Copy">
         <DrawingImage.Drawing>

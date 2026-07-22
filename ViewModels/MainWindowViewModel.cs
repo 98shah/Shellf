@@ -211,15 +211,14 @@ public sealed partial class MainWindowViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanRenameItem))]
     private void RenameItem(object item)
     {
+        // In place, on the row itself — never a dialog.
         switch (item)
         {
             case TerminalTabViewModel tab:
-                if (_dialogs.PromptText("Rename tab", tab.Title) is { Length: > 0 } newTitle)
-                    tab.Title = newTitle;
+                tab.BeginRename();
                 break;
             case TabGroupViewModel group:
-                if (_dialogs.PromptText("Rename group", group.Name) is { Length: > 0 } newName)
-                    group.Name = newName;
+                group.BeginRename();
                 break;
         }
     }

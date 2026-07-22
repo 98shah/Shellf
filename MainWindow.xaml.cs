@@ -88,6 +88,11 @@ public partial class MainWindow : Window
         if (DataContext is not MainWindowViewModel viewModel)
             return;
 
+        // Clicks inside an inline rename box are caret/selection work — activating
+        // or drag-arming the row here would fight the TextBox.
+        if (HasAncestor<TextBox>(e.OriginalSource))
+            return;
+
         var item = GetRowItem(e.OriginalSource);
 
         if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0 && item is not null)
@@ -159,12 +164,14 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    private static bool IsOnButton(object originalSource)
+    private static bool IsOnButton(object originalSource) => HasAncestor<ButtonBase>(originalSource);
+
+    private static bool HasAncestor<T>(object originalSource) where T : DependencyObject
     {
         var current = originalSource as DependencyObject;
         while (current is not null and not TreeViewItem)
         {
-            if (current is ButtonBase)
+            if (current is T)
                 return true;
             current = VisualTreeHelper.GetParent(current);
         }
@@ -319,6 +326,70 @@ public partial class MainWindow : Window
         var text = NotesBox.SelectionLength > 0 ? NotesBox.SelectedText : NotesBox.Text;
         viewModel.SendToActiveInput(text);
         NotesPopup.IsOpen = false; // hand the stage back to the terminal
+    }
+
+    /// <summary>Focus can only land once the box is rendered — containers for
+    /// brand-new tabs materialize a beat after the view model adds them.</summary>
+    private void OnRenameBoxVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is true && sender is TextBox box)
+            Dispatcher.InvokeAsync(() =>
+            {
+                box.Focus();
+                box.SelectAll();
+            }, System.Windows.Threading.DispatcherPriority.Input);
+    }
+
+    private void OnRenameBoxKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not FrameworkElement element)
+            return;
+
+        if (e.Key == Key.Enter)
+        {
+            CommitRename(element.DataContext);
+            TerminalHost.FocusTerminal(); // named it — now type in it
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            CancelRename(element.DataContext);
+            TerminalHost.FocusTerminal();
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>Clicking anywhere else commits, like Explorer's inline rename.</summary>
+    private void OnRenameBoxLostFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is FrameworkElement element)
+            CommitRename(element.DataContext);
+    }
+
+    private static void CommitRename(object? item)
+    {
+        switch (item)
+        {
+            case TerminalTabViewModel tab:
+                tab.CommitRename();
+                break;
+            case TabGroupViewModel group:
+                group.CommitRename();
+                break;
+        }
+    }
+
+    private static void CancelRename(object? item)
+    {
+        switch (item)
+        {
+            case TerminalTabViewModel tab:
+                tab.CancelRename();
+                break;
+            case TabGroupViewModel group:
+                group.CancelRename();
+                break;
+        }
     }
 
     private void OnGroupHeaderClick(object sender, MouseButtonEventArgs e)

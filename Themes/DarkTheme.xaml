@@ -5,8 +5,8 @@
     <views:ColorHexToAccentBrushConverter x:Key="Converter.ColorAccent"/>
 
     <!-- ============ Palette: black & grey, no accent color, no rounded corners ============ -->
-    <SolidColorBrush x:Key="Brush.Window"       Color="#FF050505"/>
-    <SolidColorBrush x:Key="Brush.Sidebar"      Color="#FF0A0A0A"/>
+    <SolidColorBrush x:Key="Brush.Window"       Color="#FF000000"/>
+    <SolidColorBrush x:Key="Brush.Sidebar"      Color="#FF000000"/>
     <SolidColorBrush x:Key="Brush.Panel"        Color="#FF121212"/>
     <SolidColorBrush x:Key="Brush.Border"       Color="#FF262626"/>
     <SolidColorBrush x:Key="Brush.BorderFocus"  Color="#FF6E6E6E"/>
@@ -170,6 +170,16 @@
                 <Setter Property="BorderBrush" Value="{StaticResource Brush.BorderFocus}"/>
             </Trigger>
         </Style.Triggers>
+    </Style>
+
+    <!-- Inline rename box in the sidebar tree: chromeless so it sits exactly where
+         the label was, with the neon caret marking the edit state. -->
+    <Style x:Key="InlineRenameBox" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="CaretBrush" Value="{StaticResource Brush.Neon}"/>
+        <Setter Property="SelectionBrush" Value="{StaticResource Brush.NeonDim}"/>
     </Style>
 
     <!-- ============ ListBox (sidebar groups) ============ -->

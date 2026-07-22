@@ -151,6 +151,13 @@ public partial class TerminalHostView : UserControl
             Web.Focus();
     }
 
+    /// <summary>Hands keyboard focus back to the terminal, e.g. after an inline rename.</summary>
+    public void FocusTerminal()
+    {
+        if (_webReady && ActiveSessionId.Length > 0)
+            Web.Focus();
+    }
+
     /// <summary>
     /// WebView2 processes live outside ours and can die independently; that must
     /// never take the shells down with it.

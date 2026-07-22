@@ -24,6 +24,14 @@ public sealed partial class TerminalTabViewModel : ObservableObject
     [ObservableProperty]
     private bool _isMarked;
 
+    /// <summary>Shows the inline rename box in the sidebar row.</summary>
+    [ObservableProperty]
+    private bool _isRenaming;
+
+    /// <summary>Scratch text for the inline rename box; <see cref="Title"/> changes only on commit.</summary>
+    [ObservableProperty]
+    private string _editingTitle = string.Empty;
+
     public string SessionId { get; }
     public string ShellPath { get; }
 
@@ -39,4 +47,24 @@ public sealed partial class TerminalTabViewModel : ObservableObject
         LaunchDirectory = launchDirectory;
         _currentDirectory = launchDirectory;
     }
+
+    public void BeginRename()
+    {
+        EditingTitle = Title;
+        IsRenaming = true;
+    }
+
+    /// <summary>Idempotent: Enter commits first, then the box's focus loss fires again.</summary>
+    public void CommitRename()
+    {
+        if (!IsRenaming)
+            return;
+        IsRenaming = false;
+
+        var title = EditingTitle.Trim();
+        if (title.Length > 0)
+            Title = title; // empty input keeps the old name, matching the old dialog
+    }
+
+    public void CancelRename() => IsRenaming = false;
 }

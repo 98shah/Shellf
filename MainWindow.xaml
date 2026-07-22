@@ -52,6 +52,7 @@
 
     <Window.InputBindings>
         <KeyBinding Modifiers="Control" Key="S" Command="{Binding SaveWorkspaceCommand}"/>
+        <KeyBinding Modifiers="Control" Key="N" Command="{Binding AddDefaultTabCommand}"/>
     </Window.InputBindings>
 
     <Grid x:Name="RootLayout">
@@ -243,7 +244,15 @@
                                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                               Stretch="Uniform" Width="13" Height="13"
                                               VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="GroupNameText" Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBox x:Name="GroupNameEdit"
+                                                 Style="{StaticResource InlineRenameBox}"
+                                                 Visibility="Collapsed" MinWidth="90"
+                                                 FontWeight="SemiBold" VerticalAlignment="Center"
+                                                 Text="{Binding EditingName, UpdateSourceTrigger=PropertyChanged}"
+                                                 IsVisibleChanged="OnRenameBoxVisibleChanged"
+                                                 PreviewKeyDown="OnRenameBoxKeyDown"
+                                                 LostKeyboardFocus="OnRenameBoxLostFocus"/>
                                         <TextBlock Text="{Binding Tabs.Count, StringFormat=({0})}"
                                                    Foreground="{StaticResource Brush.TextMuted}"
                                                    VerticalAlignment="Center"
@@ -264,6 +273,10 @@
                                 <Trigger SourceName="GroupRow" Property="IsMouseOver" Value="True">
                                     <Setter TargetName="AddToGroupButton" Property="Opacity" Value="1"/>
                                 </Trigger>
+                                <DataTrigger Binding="{Binding IsRenaming}" Value="True">
+                                    <Setter TargetName="GroupNameText" Property="Visibility" Value="Collapsed"/>
+                                    <Setter TargetName="GroupNameEdit" Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
                             </HierarchicalDataTemplate.Triggers>
                         </HierarchicalDataTemplate>
 
@@ -305,7 +318,14 @@
                                            Width="13" Height="13"
                                            VerticalAlignment="Center" Margin="0,0,7,0"/>
                                     <StackPanel Grid.Column="1">
-                                        <TextBlock Text="{Binding Title}"/>
+                                        <TextBlock x:Name="TabTitleText" Text="{Binding Title}"/>
+                                        <TextBox x:Name="TabTitleEdit"
+                                                 Style="{StaticResource InlineRenameBox}"
+                                                 Visibility="Collapsed"
+                                                 Text="{Binding EditingTitle, UpdateSourceTrigger=PropertyChanged}"
+                                                 IsVisibleChanged="OnRenameBoxVisibleChanged"
+                                                 PreviewKeyDown="OnRenameBoxKeyDown"
+                                                 LostKeyboardFocus="OnRenameBoxLostFocus"/>
                                         <TextBlock Text="{Binding CurrentDirectory}"
                                                    FontSize="10.5"
                                                    Foreground="{StaticResource Brush.TextMuted}"
@@ -325,6 +345,10 @@
                                 <Trigger SourceName="TabRow" Property="IsMouseOver" Value="True">
                                     <Setter TargetName="CloseTabButton" Property="Opacity" Value="1"/>
                                 </Trigger>
+                                <DataTrigger Binding="{Binding IsRenaming}" Value="True">
+                                    <Setter TargetName="TabTitleText" Property="Visibility" Value="Collapsed"/>
+                                    <Setter TargetName="TabTitleEdit" Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
                             </DataTemplate.Triggers>
                         </DataTemplate>
 
@@ -432,11 +456,11 @@
             </Border>
 
             <Grid Grid.Row="1">
-            <TextBlock Text="No terminal selected — press + to open one."
+            <TextBlock Text="No terminal open — press Ctrl+N to start one."
                        Foreground="{StaticResource Brush.TextMuted}"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
 
-            <views:TerminalHostView
+            <views:TerminalHostView x:Name="TerminalHost"
                 ActiveSessionId="{Binding SelectedTab.SessionId, FallbackValue='', TargetNullValue=''}">
                 <views:TerminalHostView.Style>
                     <Style TargetType="{x:Type views:TerminalHostView}">
